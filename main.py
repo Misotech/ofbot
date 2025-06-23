@@ -12,6 +12,8 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_applicati
 
 from supabase import create_client, Client
 
+import json  # ✅ понадобится для логирования payload
+
 # --- ENVIRONMENT VARIABLES ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -37,6 +39,55 @@ def parse_start_param(param: str):
         return None, None
     parts = param.split("_", 1)
     return "of", parts[1] if len(parts) > 1 else None
+
+
+# --- LOGGING MIDDLEWARE ---
+@web.middleware
+async def logging_middleware(request, handler):
+    try:
+        method = request.method
+        path = request.path
+        ip = request.remote
+        user_agent = request.headers.get("User-Agent", "")
+        try:
+            payload = await request.json()
+        except:
+            payload = {}
+
+        response = await handler(request)
+
+        # логгирование в supabase
+        supabase.table("http_logs").insert({
+            "method": method,
+            "path": path,
+            "status_code": response.status,
+            "ip": ip,
+            "user_agent": user_agent,
+            "payload": payload,
+            "source": detect_source(path, user_agent)
+        }).execute()
+
+        return response
+
+    except Exception as e:
+        supabase.table("http_logs").insert({
+            "method": request.method,
+            "path": request.path,
+            "status_code": 500,
+            "ip": request.remote,
+            "user_agent": request.headers.get("User-Agent", ""),
+            "payload": {},
+            "source": "error"
+        }).execute()
+        raise
+
+
+def detect_source(path: str, user_agent: str) -> str:
+    if path.startswith("/webhook"):
+        return "telegram"
+    if "Mozilla" in user_agent:
+        return "browser"
+    return "unknown"
 
 
 # --- COMMAND: /start ---
@@ -99,7 +150,10 @@ async def on_startup(app: web.Application):
     await bot.set_webhook(WEBHOOK_URL)
 
 
-app = web.Application()
+# --- APP SETUP ---
+app = web.Application(middlewares=[logging_middleware])  # ✅ подключаем middleware
+app["supabase"] = supabase
+
 dp["base_url"] = WEBHOOK_URL
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
 app.on_startup.append(on_startup)
