@@ -55,7 +55,9 @@ async def start_handler(message: Message):
     result = supabase.table("users").select("*").eq("id", user_id).execute()
     if not result.data:
         if not category:
-            await message.answer("❌ Ошибка. Напишите мне в личку: @jp_agency")
+            lang_code = message.from_user.language_code or "en"
+            error_text = "❌ Error. Message me: @jp_agency" if lang_code == "en" else "❌ Ошибка. Напишите мне в личку: @jp_agency"
+            await message.answer(error_text)
             return
 
         # Register new user
