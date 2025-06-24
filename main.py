@@ -351,18 +351,25 @@ async def on_startup(app: web.Application):
 
 async def crypto_webhook(request: web.Request):
     try:
-        data = await request.json()
+        data = await request.post()  # ← ВАЖНО: CryptoCloud шлёт form-data, а не JSON
+
         status = data.get("status")
         order_id = data.get("order_id")
+        invoice_id = data.get("invoice_id")
+        token = data.get("token")
 
-        if status != "paid" or not order_id:
-            return web.json_response({"ok": True, "msg": "Ignored"}, status=200)
+        print("📥 CryptoCloud webhook received:", dict(data))
+
+        if status != "success" or not order_id:
+            return web.json_response({"ok": True, "msg": "Ignored non-success status"}, status=200)
 
         # Обновляем invoice
         update_result = supabase.table("invoices") \
             .update({
                 "status": "paid",
-                "paid_at": datetime.utcnow().isoformat()
+                "paid_at": datetime.utcnow().isoformat(),
+                "invoice_id": invoice_id,
+                "token": token
             }) \
             .eq("order_id", order_id) \
             .execute()
@@ -370,7 +377,7 @@ async def crypto_webhook(request: web.Request):
         if update_result.data:
             print(f"✅ Invoice {order_id} marked as paid.")
         else:
-            print(f"⚠️ Invoice {order_id} not found.")
+            print(f"⚠️ Invoice {order_id} not found in database.")
 
         return web.json_response({"ok": True})
 
