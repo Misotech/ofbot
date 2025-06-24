@@ -14,6 +14,8 @@ from supabase import create_client, Client
 
 import json  # ✅ понадобится для логирования payload
 
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
 # --- ENVIRONMENT VARIABLES ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
@@ -91,6 +93,7 @@ def detect_source(path: str, user_agent: str) -> str:
 
 
 # --- COMMAND: /start ---
+
 @dp.message(F.text.startswith("/start"))
 async def start_handler(message: Message):
     user_id = message.from_user.id
@@ -106,8 +109,7 @@ async def start_handler(message: Message):
     result = supabase.table("users").select("*").eq("id", user_id).execute()
     if not result.data:
         if not category:
-            lang_code = message.from_user.language_code or "en"
-            error_text = "❌ Error. Message me: @jp_agency" if lang_code == "en" else "❌ Ошибка. Напишите мне в личку: @jp_agency"
+            error_text = "❌ Error. Message me: @jp_agency" if lang == "en" else "❌ Ошибка. Напишите мне в личку: @jp_agency"
             await message.answer(error_text)
             return
 
@@ -119,13 +121,35 @@ async def start_handler(message: Message):
             "category": category,
             "channel": channel
         }).execute()
-
     else:
         lang = result.data[0]["lang"]
         category = result.data[0]["category"]
+        channel = result.data[0]["channel"]
 
+    # Основная клавиатура
     keyboard = get_main_keyboard(lang, category)
     await message.answer("✅ Добро пожаловать!" if lang == "ru" else "✅ Welcome!", reply_markup=keyboard)
+
+    # --- Получаем тарифы из supabase ---
+    tariffs = supabase.table("tariffs") \
+        .select("*") \
+        .eq("is_active", True) \
+        .eq("category", category) \
+        .eq("channel_name", channel) \
+        .execute().data
+
+    if tariffs:
+        plan_text = "Выберите тариф 👇" if lang == "ru" else "Choose plan 👇"
+        buttons = []
+
+        for tariff in tariffs:
+            duration_days = int(tariff["lifetime"]) // 1440  # 60*24 = 1440 минут в дне
+            text = f"{tariff['title']} | {tariff['price']}$ | {duration_days} days"
+            callback_data = f"plan_{tariff['id']}"
+            buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
+
+        inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+        await message.answer(plan_text, reply_markup=inline_kb)
 
 
 # --- ECHO OTHER MESSAGES ---
