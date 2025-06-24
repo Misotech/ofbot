@@ -349,7 +349,6 @@ async def on_startup(app: web.Application):
     await bot.set_webhook(WEBHOOK_URL)
 
 
-@web.post("/webhook/cryptocloud")
 async def crypto_webhook(request: web.Request):
     try:
         data = await request.json()
@@ -387,6 +386,10 @@ app["supabase"] = supabase
 
 dp["base_url"] = WEBHOOK_URL
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
+
+# Регистрируем CryptoCloud Webhook вручную
+app.router.add_post("/webhook/cryptocloud", crypto_webhook)
+
 app.on_startup.append(on_startup)
 
 if __name__ == "__main__":
