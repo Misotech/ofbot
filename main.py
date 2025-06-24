@@ -269,6 +269,20 @@ async def card_payment_handler(callback: CallbackQuery):
     user_resp = supabase.table("users").select("lang").eq("id", user_id).single().execute()
     lang = user_resp.data["lang"] if user_resp.data else "en"
 
+    # Проверка на активную подписку
+    existing_sub = supabase.table("subscriptions") \
+        .select("*") \
+        .eq("user_id", user_id) \
+        .eq("tariff_id", tariff_id) \
+        .eq("status", "active") \
+        .execute()
+
+    if existing_sub.data:
+        msg = "❌ У вас уже есть активная подписка на этот тариф." if lang == "ru" else "❌ You already have an active subscription to this plan."
+        await callback.message.answer(msg)
+        await callback.answer()
+        return
+
     # Получаем тариф
     tariff_resp = supabase.table("tariffs").select("tribute_link", "title").eq("id", tariff_id).single().execute()
     if not tariff_resp.data:
