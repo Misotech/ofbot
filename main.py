@@ -45,12 +45,13 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- MENU ---
 def get_main_keyboard(lang: str, category: Optional[str]) -> ReplyKeyboardMarkup:
+    buttons = []
     if category == "of":
-        label = "Моя подписка" if lang == "ru" else "My subscription"
-        kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=label)]], resize_keyboard=True)
-    else:
-        kb = ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True)
-    return kb
+        label_sub = "Моя подписка" if lang == "ru" else "My subscription"
+        label_plans = "📋 Тарифы" if lang == "ru" else "📋 Plans"
+        buttons = [[KeyboardButton(text=label_sub)], [KeyboardButton(text=label_plans)]]
+    return ReplyKeyboardMarkup(keyboard=buttons, resize_keyboard=True)
+
 
 
 
@@ -212,6 +213,45 @@ async def my_subscription_text_handler(message: Message):
             msg_lines.append(f"📦 <b>{title}</b>\n🗓 Ends at: {ends_at}\n🔗 Channel: {channel_id}")
 
     await message.answer("\n\n".join(msg_lines), parse_mode="HTML")
+
+@dp.message(F.text.in_(["📋 Тарифы", "📋 Plans"]))
+async def plans_text_handler(message: Message):
+    user_id = message.from_user.id
+
+    user_resp = supabase.table("users").select("*").eq("id", user_id).single().execute()
+    if not user_resp.data:
+        await message.answer("❌ Ошибка. Напишите мне: @jp_agency")
+        return
+
+    user = user_resp.data
+    lang = user["lang"]
+    category = user["category"]
+    channel = user["channel"]
+
+    # Получаем тарифы
+    tariffs = supabase.table("tariffs") \
+        .select("*") \
+        .eq("is_active", True) \
+        .eq("category", category) \
+        .eq("channel_name", channel) \
+        .execute().data
+
+    if not tariffs:
+        await message.answer("❌ Нет доступных тарифов." if lang == "ru" else "❌ No active plans available.")
+        return
+
+    plan_text = "Выберите тариф 👇" if lang == "ru" else "Choose plan 👇"
+    buttons = []
+
+    for tariff in tariffs:
+        duration_days = int(tariff["lifetime"]) // 1440
+        text = f"{tariff['title']} | {tariff['price']}$ | {duration_days} days"
+        callback_data = f"plan_{tariff['id']}"
+        buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
+
+    inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await message.answer(plan_text, reply_markup=inline_kb)
+
 
 
 @dp.callback_query(F.data.startswith("plan_"))
@@ -417,7 +457,7 @@ async def crypto_payment_handler(callback: CallbackQuery):
             pay_link = resp_data.get("result", {}).get("link")
             if pay_link:
                 separator = "&" if "?" in pay_link else "?"
-                pay_link += f"{separator}locale={locale}"
+                pay_link += f"{separator}lang={locale}"
             
             if not pay_link:
                 await callback.message.answer("❌ Не удалось получить ссылку на оплату")
