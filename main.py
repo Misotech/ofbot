@@ -502,8 +502,8 @@ async def crypto_webhook(request: web.Request):
             "started_at": started_at.isoformat(),
             "ends_at": ends_at.isoformat(),
             "status": "active",
-            "created_at": started_at.isoformat(),
-            "invoice_id": invoice_id
+            "created_at": started_at.isoformat()
+            # "invoice_id": invoice_id
         }).execute()
 
         # --- Создаем invite ссылку для канала и отправляем ---
