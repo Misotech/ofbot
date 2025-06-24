@@ -257,7 +257,7 @@ async def crypto_payment_handler(callback: CallbackQuery):
         return
     user = user_result.data[0]
     lang = user["lang"]
-    locale = "ru" if lang == "ru" else "en"
+    locale = lang
 
     # Получаем тариф
     tariff_result = supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
