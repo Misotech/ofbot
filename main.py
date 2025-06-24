@@ -1,6 +1,7 @@
 import os
 from datetime import datetime
 from typing import Optional
+from uuid import uuid4
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
@@ -16,6 +17,11 @@ import json  # ✅ понадобится для логирования payload
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from html import escape
+
+import aiohttp
+
+CRYPTOCLOUD_API_KEY = os.getenv("CRYPTOCLOUD_API_KEY")
+CRYPTOCLOUD_SHOP_ID = os.getenv("CRYPTOCLOUD_SHOP_ID")
 
 
 # --- ENVIRONMENT VARIABLES ---
@@ -236,6 +242,81 @@ async def back_to_plan_list(callback: CallbackQuery):
     inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
     await callback.message.edit_text(plan_text, reply_markup=inline_kb)
     await callback.answer()
+
+
+
+@dp.callback_query(F.data.startswith("pay_crypto_"))
+async def crypto_payment_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    tariff_id = callback.data.split("_", 2)[2]
+
+    # Получаем пользователя
+    user_result = supabase.table("users").select("*").eq("id", user_id).execute()
+    if not user_result.data:
+        await callback.answer("❌ User not found")
+        return
+    user = user_result.data[0]
+    lang = user["lang"]
+    locale = "ru" if lang == "ru" else "en"
+
+    # Получаем тариф
+    tariff_result = supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
+    if not tariff_result.data:
+        await callback.answer("❌ Tariff not found")
+        return
+    tariff = tariff_result.data
+
+    amount = float(tariff["price"])
+
+    # --- Запрос в CryptoCloud ---
+    url = "https://api.cryptocloud.plus/v2/invoice/create"
+    headers = {
+        "Authorization": f"Token {CRYPTOCLOUD_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "shop_id": CRYPTOCLOUD_SHOP_ID,
+        "amount": amount,
+        "currency": "USD",
+        "locale": locale,
+        "add_fields": {
+            "user_id": str(user_id),
+            "tariff_id": tariff_id
+        },
+        order_id = f"{user_id}-{tariff_id}-{int(datetime.utcnow().timestamp())}"
+    }
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(url, headers=headers, json=payload) as response:
+            if response.status != 200:
+                await callback.message.answer("❌ Ошибка при создании счета")
+                return
+            resp_data = await response.json()
+            pay_link = resp_data.get("result", {}).get("link")
+            
+            if not pay_link:
+                await callback.message.answer("❌ Не удалось получить ссылку на оплату")
+                return
+
+            # Сохраняем в Supabase
+            supabase.table("invoices").insert({
+                "id": str(uuid4()),
+                "user_id": user_id,
+                "tariff_id": tariff_id,
+                "order_id": payload["order_id"],
+                "invoice_link": pay_link,
+                "amount": amount,
+                "currency": "USD",
+                "status": "created",
+                "raw_response": resp_data  # сохраним ответ целиком
+            }).execute()
+
+            await callback.message.answer(
+                "🪙 <b>Оплатите по ссылке:</b>\n" + pay_link if lang == "ru"
+                else "🪙 <b>Pay with crypto:</b>\n" + pay_link,
+                parse_mode="HTML"
+            )
+            await callback.answer()
 
 
 
