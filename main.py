@@ -438,8 +438,8 @@ async def crypto_webhook(request: web.Request):
 
         status = data.get("status")
         order_id = data.get("order_id")
-        invoice_id = data.get("invoice_id")
-        token = data.get("token")
+        # invoice_id = data.get("invoice_id")
+        # token = data.get("token")
 
         print("📥 CryptoCloud webhook received:", dict(data))
 
@@ -451,8 +451,8 @@ async def crypto_webhook(request: web.Request):
             .update({
                 "status": "paid",
                 "paid_at": datetime.utcnow().isoformat(),
-                "invoice_id": invoice_id,
-                "token": token
+                # "invoice_id": invoice_id,
+                # "token": token
             }) \
             .eq("order_id", order_id) \
             .execute()
