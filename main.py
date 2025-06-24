@@ -160,7 +160,7 @@ async def start_handler(message: Message):
 
     # Основная клавиатура
     keyboard = get_main_keyboard(lang, category)
-    # await message.answer("✅ Добро пожаловать!" if lang == "ru" else "✅ Welcome!", reply_markup=keyboard)
+    await message.answer("💋 Hi!" if lang == "ru" else "💋 Hi!", reply_markup=keyboard)
 
     # --- Получаем тарифы из supabase ---
     tariffs = supabase.table("tariffs") \
