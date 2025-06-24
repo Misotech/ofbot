@@ -315,6 +315,21 @@ async def crypto_payment_handler(callback: CallbackQuery):
         return
     tariff = tariff_result.data
 
+# ⛔️ Проверка на существующую активную подписку
+    existing_sub = supabase.table("subscriptions") \
+        .select("*") \
+        .eq("user_id", user_id) \
+        .eq("tariff_id", tariff_id) \
+        .eq("status", "active") \
+        .execute()
+
+    
+    if existing_sub.data:
+        msg = "❌ У вас уже есть активная подписка на этот тариф." if lang == "ru" else "❌ You already have an active subscription to this plan."
+        await callback.message.answer(msg)
+        await callback.answer()
+        return
+
     amount = float(tariff["price"])
 
     # Создаём order_id отдельно
