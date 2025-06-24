@@ -176,6 +176,38 @@ async def start_handler(message: Message):
         inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await message.answer(plan_text, reply_markup=inline_kb)
 
+
+@dp.message(F.text.in_(["My subscription", "Моя подписка"]))
+async def my_subscription_text_handler(message: Message):
+    user_id = message.from_user.id
+
+    # Получаем активные подписки (как ты уже делаешь)
+    subs_resp = supabase.table("subscriptions") \
+        .select("tariff_id, ends_at") \
+        .eq("user_id", user_id) \
+        .eq("status", "active") \
+        .execute()
+
+    if not subs_resp.data:
+        await message.answer("У вас нет активных подписок" if message.from_user.language_code == "ru" else "You have no active subscriptions")
+        return
+
+    msg_lines = []
+    for sub in subs_resp.data:
+        tariff_resp = supabase.table("tariffs") \
+            .select("title", "channel_id") \
+            .eq("id", sub["tariff_id"]) \
+            .single() \
+            .execute()
+        if tariff_resp.data:
+            title = tariff_resp.data["title"]
+            channel_id = tariff_resp.data.get("channel_id", "N/A")
+            ends_at = sub["ends_at"]
+            msg_lines.append(f"📦 <b>{title}</b>\n🗓 Ends at: {ends_at}\n🔗 Channel: {channel_id}")
+
+    await message.answer("\n\n".join(msg_lines), parse_mode="HTML")
+
+
 @dp.callback_query(F.data.startswith("plan_"))
 async def plan_detail_handler(callback: CallbackQuery):
     tariff_id = callback.data.split("_", 1)[1]
