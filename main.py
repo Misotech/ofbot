@@ -542,149 +542,148 @@ async def on_startup(app: web.Application):
     await bot.set_webhook(WEBHOOK_URL)
 
 
-async def tribute_webhook_handler(request: web.Request):
+async def tribute_webhook_handler(request: web.Request, bot: Bot):
     try:
-        # Читаем тело запроса в байтах для валидации подписи
         raw_body = await request.read()
+        data = json.loads(raw_body.decode('utf-8'))
         
-        # Получаем подпись из заголовка
-        signature = request.headers.get("trbt-signature")
-        if not signature:
-            print("⚠️ Missing tribute signature")
-            return web.json_response({"ok": False, "error": "Missing signature"}, status=400)
-
-        # Проверяем подпись HMAC SHA256
-        computed_signature = hmac.new(
-            key=TRIBUTE_API_SECRET.encode(),
-            msg=raw_body,
-            digestmod=hashlib.sha256
-        ).hexdigest()
-
-        if not hmac.compare_digest(computed_signature, signature):
-            print("⚠️ Invalid tribute signature")
-            return web.json_response({"ok": False, "error": "Invalid signature"}, status=403)
-
-        # Парсим JSON из тела
-        data = json.loads(raw_body.decode("utf-8"))
         print("📥 Tribute webhook received:", data)
-
-        name = data.get("name")
-        payload = data.get("payload", {})
-        user_id = payload.get("user_id")
-        subscription_id = payload.get("subscription_id")
-        period = payload.get("period")
-        price = payload.get("price")
-        amount = payload.get("amount")
-        currency = payload.get("currency")
-        telegram_user_id = payload.get("telegram_user_id")
-        channel_id = payload.get("channel_id")
-        channel_name = payload.get("channel_name")
-        expires_at_str = payload.get("expires_at")
-        expires_at = None
-        if expires_at_str:
-            expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00"))
-
-        # Проверяем, что user_id есть
-        if not user_id:
-            return web.json_response({"ok": False, "error": "Missing user_id"}, status=400)
-
-        # Импортируем supabase и bot из глобального контекста, если надо
-        # Можно сделать через app["supabase"], app["bot"] если передать в request.app
-        supabase = request.app["supabase"]
-        bot = request.app["bot"]
-
-        if name == "new_subscription":
-            # Добавляем новую активную подписку или обновляем
-            # Уникальная подписка - subscription_id
-            # Сохраняем в таблицу subscriptions:
-            # id: subscription_id, user_id, tariff_id (можно сопоставить через subscription_name или channel_id),
-            # started_at - теперь, ends_at - expires_at, status='active'
-            # Для простоты в поле order_id запишем subscription_id
+        
+        # Проверка подписи
+        signature = request.headers.get("trbt-signature")
+        if signature and TRIBUTE_API_SECRET:
+            computed_signature = hmac.new(
+                key=TRIBUTE_API_SECRET.encode(),
+                msg=raw_body,
+                digestmod=hashlib.sha256
+            ).hexdigest()
             
-            # Пробуем найти тариф по channel_id и/или subscription_name
-            tariff_resp = supabase.table("tariffs").select("*").eq("channel_id", channel_id).limit(1).execute()
-            tariff_id = tariff_resp.data[0]["id"] if tariff_resp.data else None
-
+            if not hmac.compare_digest(computed_signature, signature):
+                print("❌ Invalid Tribute signature")
+                return web.json_response({"ok": False, "error": "Invalid signature"}, status=403)
+        
+        event_name = data.get("name")
+        payload = data.get("payload", {})
+        telegram_user_id = payload.get("telegram_user_id")
+        
+        if not telegram_user_id:
+            return web.json_response({"ok": False, "error": "Missing telegram_user_id"}, status=400)
+        
+        supabase = request.app["supabase"]
+        
+        # Получаем язык пользователя из базы
+        user_resp = supabase.table("users") \
+            .select("lang") \
+            .eq("id", telegram_user_id) \
+            .execute()
+        
+        lang = "en"  # значение по умолчанию
+        if user_resp.data:
+            lang = user_resp.data[0].get("lang", "en")
+        
+        if event_name == "new_subscription":
+            subscription_id = payload.get("subscription_id")
+            subscription_name = payload.get("subscription_name")
+            expires_at = payload.get("expires_at")
+            
+            if not all([subscription_id, subscription_name, expires_at]):
+                error_msg = "Недостаточно данных" if lang == "ru" else "Missing required fields"
+                return web.json_response({"ok": False, "error": error_msg}, status=400)
+            
+            # Находим тариф по subscription_name (соответствует title в таблице тарифов)
+            tariff_resp = supabase.table("tariffs") \
+                .select("*") \
+                .eq("title", subscription_name) \
+                .limit(1) \
+                .execute()
+            
+            if not tariff_resp.data:
+                print(f"❌ Tariff not found for subscription_name: {subscription_name}")
+                error_msg = "Тариф не найден" if lang == "ru" else "Tariff not found"
+                return web.json_response({"ok": False, "error": error_msg}, status=404)
+            
+            tariff = tariff_resp.data[0]
+            tariff_id = tariff["id"]
+            channel_id = tariff.get("channel_id")
             started_at = datetime.now(timezone.utc).isoformat()
-            ends_at = expires_at.isoformat() if expires_at else None
-
-            # Проверяем, есть ли уже подписка с таким subscription_id
-            existing = supabase.table("subscriptions").select("*").eq("id", subscription_id).execute()
-            if existing.data:
-                # Обновляем
-                supabase.table("subscriptions").update({
-                    "user_id": user_id,
-                    "tariff_id": tariff_id,
-                    "started_at": started_at,
-                    "ends_at": ends_at,
-                    "status": "active",
-                    "price": price,
-                    "currency": currency,
-                    "updated_at": started_at
-                }).eq("id", subscription_id).execute()
-            else:
-                # Вставляем новую
-                supabase.table("subscriptions").insert({
-                    "id": subscription_id,
-                    "user_id": user_id,
-                    "tariff_id": tariff_id,
-                    "started_at": started_at,
-                    "ends_at": ends_at,
-                    "status": "active",
-                    "price": price,
-                    "currency": currency,
-                    "created_at": started_at,
-                    "updated_at": started_at
-                }).execute()
-
-            # Отправляем пользователю сообщение в телеграм
-            try:
-                msg = f"✅ Ваша подписка активирована: {payload.get('subscription_name')}\n" \
-                      f"Срок действия: {expires_at_str}\n" \
-                      f"Сумма: {amount} {currency}"
-                await bot.send_message(chat_id=user_id, text=msg)
-            except Exception as e:
-                print(f"❌ Telegram send message error: {e}")
-
-        elif name == "cancelled_subscription":
-            # Обновляем подписку в статус cancelled
-            cancel_reason = payload.get("cancel_reason", "")
-            expires_at_str = payload.get("expires_at")
-            expires_at = None
-            if expires_at_str:
-                expires_at = datetime.fromisoformat(expires_at_str.replace("Z", "+00:00")).isoformat()
-
-            # Обновляем подписку по subscription_id
-            supabase.table("subscriptions").update({
-                "status": "cancelled",
+            
+            # Обновляем или создаем подписку
+            supabase.table("subscriptions").upsert({
+                "id": subscription_id,
+                "user_id": telegram_user_id,
+                "tariff_id": tariff_id,
+                "started_at": started_at,
                 "ends_at": expires_at,
-                "cancel_reason": cancel_reason,
-                "updated_at": datetime.now(timezone.utc).isoformat()
-            }).eq("id", subscription_id).execute()
-
+                "status": "active",
+                "price": payload.get("price"),
+                "currency": payload.get("currency"),
+                "updated_at": started_at
+            }).execute()
+            
+            # Формируем сообщения на нужном языке
+            if lang == "ru":
+                success_msg = (
+                    f"🎉 Подписка активирована!\n\n"
+                    f"📝 Тариф: {subscription_name}\n"
+                    f"💰 Стоимость: {payload.get('amount')} {payload.get('currency')}\n"
+                    f"⏳ Действует до: {expires_at}"
+                )
+                invite_msg = f"🔗 Ссылка для вступления: {{link}}"
+            else:
+                success_msg = (
+                    f"🎉 Subscription activated!\n\n"
+                    f"📝 Plan: {subscription_name}\n"
+                    f"💰 Amount: {payload.get('amount')} {payload.get('currency')}\n"
+                    f"⏳ Valid until: {expires_at}"
+                )
+                invite_msg = f"🔗 Invite link: {{link}}"
+            
+            # Отправляем сообщение пользователю
             try:
-                msg = f"❌ Ваша подписка отменена: {payload.get('subscription_name')}\n" \
-                      f"Причина: {cancel_reason or 'не указана'}"
-                await bot.send_message(chat_id=user_id, text=msg)
+                await bot.send_message(chat_id=telegram_user_id, text=success_msg)
+                
+                # Если есть channel_id, создаем инвайт-ссылку
+                if channel_id:
+                    invite = await bot.create_chat_invite_link(
+                        chat_id=channel_id,
+                        member_limit=1
+                    )
+                    await bot.send_message(
+                        chat_id=telegram_user_id,
+                        text=invite_msg.format(link=invite.invite_link)
+                    )
             except Exception as e:
-                print(f"❌ Telegram send message error: {e}")
-
-        else:
-            print(f"⚠️ Unknown Tribute event: {name}")
-
-        # Логируем webhook в supabase http_logs
-        supabase.table("http_logs").insert({
-            "method": request.method,
-            "path": str(request.rel_url),
-            "status_code": 200,
-            "ip": request.remote,
-            "user_agent": request.headers.get("User-Agent", ""),
-            "payload": data,
-            "source": "tribute"
-        }).execute()
-
-        return web.json_response({"ok": True})
-
+                print(f"❌ Error sending message: {e}")
+            
+            return web.json_response({"ok": True})
+        
+        elif event_name == "cancelled_subscription":
+            # Обработка отмены подписки с учетом языка
+            subscription_name = payload.get("subscription_name", "")
+            cancel_reason = payload.get("cancel_reason", "")
+            
+            if lang == "ru":
+                msg = (
+                    f"❌ Ваша подписка отменена\n\n"
+                    f"📝 Тариф: {subscription_name}\n"
+                    f"📌 Причина: {cancel_reason or 'не указана'}"
+                )
+            else:
+                msg = (
+                    f"❌ Your subscription has been cancelled\n\n"
+                    f"📝 Plan: {subscription_name}\n"
+                    f"📌 Reason: {cancel_reason or 'not specified'}"
+                )
+            
+            try:
+                await bot.send_message(chat_id=telegram_user_id, text=msg)
+            except Exception as e:
+                print(f"❌ Error sending cancellation message: {e}")
+            
+            return web.json_response({"ok": True})
+        
+        return web.json_response({"ok": True, "message": "Event not processed"})
+    
     except Exception as e:
         print(f"❌ Tribute webhook error: {e}")
         return web.json_response({"ok": False, "error": str(e)}, status=500)
@@ -798,7 +797,7 @@ SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path="/webhook")
 
 # Регистрируем CryptoCloud Webhook вручную
 app.router.add_post("/webhook/cryptocloud", crypto_webhook)
-app.router.add_post("/webhook/tribute", tribute_webhook_handler)
+app.router.add_post("/webhook/tribute", lambda r: tribute_webhook_handler(r, bot))
 
 app.on_startup.append(on_startup)
 
