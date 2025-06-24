@@ -1,5 +1,5 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import uuid4
 
@@ -367,8 +367,8 @@ async def crypto_webhook(request: web.Request):
         update_result = supabase.table("invoices") \
             .update({
                 "status": "paid",
-                "paid_at": datetime.utcnow().isoformat(),
-                "invoice_id": invoice_id,
+                "paid_at": datetime.now(timezone.utc).isoformat(),
+                # "invoice_id": invoice_id,
                 "token": token
             }) \
             .eq("order_id", order_id) \
