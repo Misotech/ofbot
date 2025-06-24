@@ -296,12 +296,14 @@ async def crypto_payment_handler(callback: CallbackQuery):
                 return
             resp_data = await response.json()
             pay_link = resp_data.get("result", {}).get("link")
+            if pay_link:
+                separator = "&" if "?" in pay_link else "?"
+                pay_link += f"{separator}locale={locale}"
             
             if not pay_link:
                 await callback.message.answer("❌ Не удалось получить ссылку на оплату")
                 return
 
-            # Сохраняем в Supabase
             # Сохраняем в Supabase
             supabase.table("invoices").insert({
                 "id": str(uuid4()),
@@ -345,6 +347,38 @@ async def fallback_handler(message: Message):
 # --- WEBHOOK SETUP ---
 async def on_startup(app: web.Application):
     await bot.set_webhook(WEBHOOK_URL)
+
+
+@web.post("/webhook/cryptocloud")
+async def crypto_webhook(request: web.Request):
+    try:
+        data = await request.json()
+        status = data.get("status")
+        order_id = data.get("order_id")
+
+        if status != "paid" or not order_id:
+            return web.json_response({"ok": True, "msg": "Ignored"}, status=200)
+
+        # Обновляем invoice
+        update_result = supabase.table("invoices") \
+            .update({
+                "status": "paid",
+                "paid_at": datetime.utcnow().isoformat()
+            }) \
+            .eq("order_id", order_id) \
+            .execute()
+
+        if update_result.data:
+            print(f"✅ Invoice {order_id} marked as paid.")
+        else:
+            print(f"⚠️ Invoice {order_id} not found.")
+
+        return web.json_response({"ok": True})
+
+    except Exception as e:
+        print("❌ Webhook error:", e)
+        return web.json_response({"ok": False, "error": str(e)}, status=500)
+
 
 
 # --- APP SETUP ---
