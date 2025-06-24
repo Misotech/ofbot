@@ -302,17 +302,19 @@ async def crypto_payment_handler(callback: CallbackQuery):
                 return
 
             # Сохраняем в Supabase
+            # Сохраняем в Supabase
             supabase.table("invoices").insert({
                 "id": str(uuid4()),
                 "user_id": user_id,
                 "tariff_id": tariff_id,
-                "order_id": payload["order_id"],
+                "order_id": order_id,  # ← правильно
                 "invoice_link": pay_link,
                 "amount": amount,
                 "currency": "USD",
                 "status": "created",
-                "raw_response": resp_data  # сохраним ответ целиком
+                "raw_response": resp_data
             }).execute()
+
 
             await callback.message.answer(
                 "🪙 <b>Оплатите по ссылке:</b>\n" + pay_link if lang == "ru"
