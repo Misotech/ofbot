@@ -59,14 +59,25 @@ async def logging_middleware(request, handler):
         path = request.path
         ip = request.remote
         user_agent = request.headers.get("User-Agent", "")
-        try:
-            payload = await request.json()
-        except:
+        
+        # <-- Правильное извлечение данных в зависимости от content-type
+        content_type = request.headers.get("Content-Type", "")
+        if "application/json" in content_type:
+            try:
+                payload = await request.json()
+            except:
+                payload = {}
+        elif "application/x-www-form-urlencoded" in content_type:
+            try:
+                payload = dict(await request.post())
+            except:
+                payload = {}
+        else:
             payload = {}
 
         response = await handler(request)
 
-        # логгирование в supabase
+        # логгируем
         supabase.table("http_logs").insert({
             "method": method,
             "path": path,
@@ -90,6 +101,7 @@ async def logging_middleware(request, handler):
             "source": "error"
         }).execute()
         raise
+
 
 
 def detect_source(path: str, user_agent: str) -> str:
