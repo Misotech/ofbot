@@ -381,7 +381,6 @@ async def crypto_webhook(request: web.Request):
                 "status": "paid",
                 "paid_at": datetime.now(timezone.utc).isoformat(),
                 # "invoice_id": invoice_id,
-                "token": token
             }) \
             .eq("order_id", order_id) \
             .execute()
