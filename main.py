@@ -254,6 +254,41 @@ async def plan_detail_handler(callback: CallbackQuery):
     await callback.answer()
 
 
+@dp.callback_query(F.data.startswith("pay_card_"))
+async def card_payment_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    tariff_id = callback.data.split("_", 2)[2]
+
+    # Получаем пользователя
+    user_resp = supabase.table("users").select("lang").eq("id", user_id).single().execute()
+    lang = user_resp.data["lang"] if user_resp.data else "en"
+
+    # Получаем тариф
+    tariff_resp = supabase.table("tariffs").select("tribute_link", "title").eq("id", tariff_id).single().execute()
+    if not tariff_resp.data:
+        await callback.message.answer("❌ Tariff not found")
+        await callback.answer()
+        return
+
+    tribute_link = tariff_resp.data.get("tribute_link")
+    if not tribute_link:
+        await callback.message.answer("❌ No payment link available")
+        await callback.answer()
+        return
+
+    # Кнопка-ссылка
+    button_text = "ОПЛАТИТЬ" if lang == "ru" else "PAY"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=button_text, url=tribute_link)]
+    ])
+
+    msg = "💳 Оплата картой:" if lang == "ru" else "💳 Pay by card:"
+    await callback.message.answer(msg, reply_markup=kb)
+    await callback.answer()
+
+
+
+
 @dp.callback_query(F.data == "back_to_plans")
 async def back_to_plan_list(callback: CallbackQuery):
     user_id = callback.from_user.id
