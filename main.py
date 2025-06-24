@@ -15,7 +15,8 @@ from supabase import create_client, Client
 import json  # ✅ понадобится для логирования payload
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.utils.markdown import escape
+from html import escape
+
 
 # --- ENVIRONMENT VARIABLES ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
