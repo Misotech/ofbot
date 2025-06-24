@@ -15,6 +15,7 @@ from supabase import create_client, Client
 import json  # ✅ понадобится для логирования payload
 
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.utils.markdown import escape
 
 # --- ENVIRONMENT VARIABLES ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -150,6 +151,91 @@ async def start_handler(message: Message):
 
         inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
         await message.answer(plan_text, reply_markup=inline_kb)
+
+@dp.callback_query(F.data.startswith("plan_"))
+async def plan_detail_handler(callback: CallbackQuery):
+    tariff_id = callback.data.split("_", 1)[1]
+    user_id = callback.from_user.id
+
+    # Получаем пользователя
+    result = supabase.table("users").select("*").eq("id", user_id).execute()
+    if not result.data:
+        await callback.answer("❌ Error. User not found.")
+        return
+    user = result.data[0]
+    lang = user["lang"]
+
+    # Получаем тариф
+    tariff_resp = supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
+    if not tariff_resp.data:
+        await callback.answer("❌ Tariff not found")
+        return
+    tariff = tariff_resp.data
+
+    duration_days = int(tariff["lifetime"]) // 1440
+    text = (
+        f"<b>Plan:</b> {escape(tariff['title'])}\n"
+        f"<b>Price:</b> {tariff['price']} {tariff['currency']}\n"
+        f"<b>Time:</b> {duration_days} days\n\n"
+        f"{escape(tariff.get('short_description') or '')}\n\n"
+        f"{escape(tariff.get('description') or '')}"
+    )
+
+    # Инлайн-кнопки: оплата
+    buttons = [
+        [
+            InlineKeyboardButton(text="💳 Pay by card", callback_data=f"pay_card_{tariff_id}"),
+            InlineKeyboardButton(text="🪙 Pay by crypto", callback_data=f"pay_crypto_{tariff_id}")
+        ],
+        [
+            InlineKeyboardButton(text="🔙 Back", callback_data="back_to_plans")
+        ]
+    ]
+    kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+
+    # Удаляем/редактируем старое сообщение
+    await callback.message.edit_text(text, reply_markup=kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "back_to_plans")
+async def back_to_plan_list(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    result = supabase.table("users").select("*").eq("id", user_id).execute()
+    if not result.data:
+        await callback.answer("❌ User not found")
+        return
+    user = result.data[0]
+    lang = user["lang"]
+    category = user["category"]
+    channel = user["channel"]
+
+    # Получаем тарифы
+    tariffs = supabase.table("tariffs") \
+        .select("*") \
+        .eq("is_active", True) \
+        .eq("category", category) \
+        .eq("channel_name", channel) \
+        .execute().data
+
+    if not tariffs:
+        await callback.message.edit_text("❌ No active plans available.")
+        return
+
+    plan_text = "Выберите тариф 👇" if lang == "ru" else "Choose plan 👇"
+    buttons = []
+
+    for tariff in tariffs:
+        duration_days = int(tariff["lifetime"]) // 1440
+        text = f"{tariff['title']} | {tariff['price']}$ | {duration_days} days"
+        callback_data = f"plan_{tariff['id']}"
+        buttons.append([InlineKeyboardButton(text=text, callback_data=callback_data)])
+
+    inline_kb = InlineKeyboardMarkup(inline_keyboard=buttons)
+    await callback.message.edit_text(plan_text, reply_markup=inline_kb)
+    await callback.answer()
+
 
 
 # --- ECHO OTHER MESSAGES ---
