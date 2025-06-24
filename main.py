@@ -39,12 +39,13 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- MENU ---
 def get_main_keyboard(lang: str, category: Optional[str]) -> ReplyKeyboardMarkup:
-    kb = ReplyKeyboardMarkup(resize_keyboard=True)
     if category == "of":
         label = "Моя подписка" if lang == "ru" else "My subscription"
-        kb.add(KeyboardButton(text=label))
-    # Можно добавить inline-кнопку или обычную кнопку, которая посылает callback_data="my_subscription"
+        kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=label)]], resize_keyboard=True)
+    else:
+        kb = ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True)
     return kb
+
 
 
 # --- HELPER: PARSE START PARAM ---
