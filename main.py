@@ -268,23 +268,26 @@ async def crypto_payment_handler(callback: CallbackQuery):
 
     amount = float(tariff["price"])
 
+    # Создаём order_id отдельно
+    order_id = f"{user_id}-{tariff_id}-{int(datetime.utcnow().timestamp())}"
+
     # --- Запрос в CryptoCloud ---
     url = "https://api.cryptocloud.plus/v2/invoice/create"
     headers = {
-        "Authorization": f"Token {CRYPTOCLOUD_API_KEY}",
-        "Content-Type": "application/json"
-    }
+    "Authorization": f"Token {CRYPTOCLOUD_API_KEY}",
+    "Content-Type": "application/json"
+}
     payload = {
-        "shop_id": CRYPTOCLOUD_SHOP_ID,
-        "amount": amount,
-        "currency": "USD",
-        "locale": locale,
-        "add_fields": {
-            "user_id": str(user_id),
-            "tariff_id": tariff_id
-        },
-        order_id = f"{user_id}-{tariff_id}-{int(datetime.utcnow().timestamp())}"
-    }
+    "shop_id": CRYPTOCLOUD_SHOP_ID,
+    "amount": amount,
+    "currency": "USD",
+    "locale": locale,
+    "add_fields": {
+        "user_id": str(user_id),
+        "tariff_id": tariff_id
+    },
+    "order_id": order_id  # ← здесь мы вставляем значение переменной
+}
 
     async with aiohttp.ClientSession() as session:
         async with session.post(url, headers=headers, json=payload) as response:
