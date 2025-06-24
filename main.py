@@ -10,6 +10,8 @@ from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
+from aiogram.methods import CreateChatInviteLink
+
 
 from supabase import create_client, Client
 
@@ -37,10 +39,12 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- MENU ---
 def get_main_keyboard(lang: str, category: Optional[str]) -> ReplyKeyboardMarkup:
+    kb = ReplyKeyboardMarkup(resize_keyboard=True)
     if category == "of":
         label = "Моя подписка" if lang == "ru" else "My subscription"
-        return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text=label)]], resize_keyboard=True)
-    return ReplyKeyboardMarkup(keyboard=[], resize_keyboard=True)
+        kb.add(KeyboardButton(text=label))
+    # Можно добавить inline-кнопку или обычную кнопку, которая посылает callback_data="my_subscription"
+    return kb
 
 
 # --- HELPER: PARSE START PARAM ---
@@ -356,6 +360,40 @@ async def fallback_handler(message: Message):
     await message.answer("🚧 В разработке." if lang == "ru" else "🚧 Under development.", reply_markup=keyboard)
 
 
+@dp.callback_query(F.data == "my_subscription")
+async def my_subscription_handler(callback: CallbackQuery):
+    user_id = callback.from_user.id
+
+    # Получаем все активные подписки пользователя
+    subs_resp = supabase.table("subscriptions") \
+        .select("tariff_id, ends_at") \
+        .eq("user_id", user_id) \
+        .eq("status", "active") \
+        .execute()
+
+    if not subs_resp.data or len(subs_resp.data) == 0:
+        await callback.answer("У вас нет активных подписок" if callback.from_user.language_code == "ru" else "You have no active subscriptions", show_alert=True)
+        return
+
+    msg_lines = []
+    for sub in subs_resp.data:
+        tariff_resp = supabase.table("tariffs") \
+            .select("title", "channel_id") \
+            .eq("id", sub["tariff_id"]) \
+            .single() \
+            .execute()
+        if tariff_resp.data:
+            title = tariff_resp.data["title"]
+            channel_id = tariff_resp.data.get("channel_id", "N/A")
+            ends_at = sub["ends_at"]
+            msg_lines.append(f"📦 <b>{escape(title)}</b>\n🗓 Ends at: {ends_at}\n🔗 Channel: {channel_id}")
+
+    text = "\n\n".join(msg_lines)
+
+    await callback.message.answer(text, parse_mode="HTML")
+    await callback.answer()
+
+
 # --- WEBHOOK SETUP ---
 async def on_startup(app: web.Application):
     await bot.set_webhook(WEBHOOK_URL)
@@ -363,7 +401,7 @@ async def on_startup(app: web.Application):
 
 async def crypto_webhook(request: web.Request):
     try:
-        data = await request.post()  # ← ВАЖНО: CryptoCloud шлёт form-data, а не JSON
+        data = await request.post()  # form-data от CryptoCloud
 
         status = data.get("status")
         order_id = data.get("order_id")
@@ -379,16 +417,78 @@ async def crypto_webhook(request: web.Request):
         update_result = supabase.table("invoices") \
             .update({
                 "status": "paid",
-                "paid_at": datetime.now(timezone.utc).isoformat(),
-                # "invoice_id": invoice_id,
+                "paid_at": datetime.utcnow().isoformat(),
+                "invoice_id": invoice_id,
+                "token": token
             }) \
             .eq("order_id", order_id) \
             .execute()
 
-        if update_result.data:
-            print(f"✅ Invoice {order_id} marked as paid.")
-        else:
+        if not update_result.data:
             print(f"⚠️ Invoice {order_id} not found in database.")
+            return web.json_response({"ok": False, "error": "Invoice not found"}, status=404)
+
+        print(f"✅ Invoice {order_id} marked as paid.")
+
+        # --- Получаем user_id, tariff_id из invoices ---
+        invoice = update_result.data[0]
+        user_id = invoice["user_id"]
+        tariff_id = invoice["tariff_id"]
+
+        # --- Получаем lang пользователя ---
+        user_resp = supabase.table("users").select("lang").eq("id", user_id).single().execute()
+        lang = user_resp.data["lang"] if user_resp.data else "en"
+
+        # --- Отправляем сообщение пользователю ---
+        try:
+            msg_text = "✅ Оплата прошла успешно!" if lang == "ru" else "✅ Payment successful!"
+            await bot.send_message(chat_id=user_id, text=msg_text)
+        except Exception as e:
+            print(f"❌ Error sending payment success message to user {user_id}: {e}")
+
+        # --- Получаем тариф для времени подписки и канала ---
+        tariff_resp = supabase.table("tariffs").select("lifetime", "channel_id", "title").eq("id", tariff_id).single().execute()
+        if not tariff_resp.data:
+            print(f"⚠️ Tariff {tariff_id} not found.")
+            return web.json_response({"ok": True})
+
+        tariff = tariff_resp.data
+        lifetime_min = int(tariff["lifetime"])
+        channel_id = tariff.get("channel_id")
+
+        started_at = datetime.utcnow()
+        ends_at = started_at + timedelta(minutes=lifetime_min)
+
+        # --- Создаем запись подписки ---
+        sub_id = str(uuid4())
+        supabase.table("subscriptions").insert({
+            "id": sub_id,
+            "user_id": user_id,
+            "tariff_id": tariff_id,
+            "order_id": order_id,
+            "started_at": started_at.isoformat(),
+            "ends_at": ends_at.isoformat(),
+            "status": "active",
+            "created_at": started_at.isoformat(),
+            "invoice_id": invoice_id
+        }).execute()
+
+        # --- Создаем invite ссылку для канала и отправляем ---
+        if channel_id:
+            try:
+                # Получаем уже существующую или создаем новую ссылку
+                invite = await bot.create_chat_invite_link(chat_id=channel_id, expire_date=None, member_limit=None)
+                invite_link = invite.invite_link
+                invite_msg = (
+                    f"📢 Вы получили доступ к каналу по подписке: {tariff['title']}\n\n"
+                    f"Ссылка для вступления: {invite_link}"
+                    if lang == "ru" else
+                    f"📢 You have been granted access to the channel for your subscription: {tariff['title']}\n\n"
+                    f"Invite link: {invite_link}"
+                )
+                await bot.send_message(chat_id=user_id, text=invite_msg)
+            except Exception as e:
+                print(f"❌ Error creating or sending invite link for user {user_id}: {e}")
 
         return web.json_response({"ok": True})
 
