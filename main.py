@@ -41,7 +41,61 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 # --- INIT ---
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+
+class JaneSupabase:
+    def __init__(self, supabase_client):
+        self.supabase = supabase_client
+        self.jane_tables = {"users", "subscriptions", "tariffs"}
+    
+    def table(self, table_name):
+        """Возвращает объект таблицы с автоматической фильтрацией и добавлением db='jane'"""
+        self.current_table = table_name
+        return self
+    
+    def _add_db_filter(self, query):
+        """Добавляет фильтр по db если таблица в списке jane_tables"""
+        if self.current_table in self.jane_tables:
+            return query.eq("db", "jane")
+        return query
+    
+    def _add_db_field(self, data):
+        """Добавляет поле db='jane' если таблица в списке jane_tables"""
+        if isinstance(data, dict) and self.current_table in self.jane_tables:
+            if "db" not in data:
+                data["db"] = "jane"
+        elif isinstance(data, list) and self.current_table in self.jane_tables:
+            for item in data:
+                if isinstance(item, dict) and "db" not in item:
+                    item["db"] = "jane"
+        return data
+
+    # Основные методы
+    def select(self, *args, **kwargs):
+        query = self.jane_supabase.table(self.current_table).select(*args, **kwargs)
+        return self._add_db_filter(query)
+    
+    def insert(self, data, **kwargs):
+        data = self._add_db_field(data)
+        return self.jane_supabase.table(self.current_table).insert(data, **kwargs)
+    
+    def update(self, data, **kwargs):
+        return self.jane_supabase.table(self.current_table).update(data, **kwargs)
+    
+    def delete(self, **kwargs):
+        query = self.jane_supabase.table(self.current_table).delete(**kwargs)
+        return self._add_db_filter(query)
+    
+    def eq(self, column, value, **kwargs):
+        query = self.jane_supabase.table(self.current_table).eq(column, value, **kwargs)
+        return self._add_db_filter(query)
+    
+    # Добавьте другие методы по мере необходимости (like, ilike, etc.)
+
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+jane_supabase = JaneSupabase(supabase)
 
 # --- MENU ---
 def get_main_keyboard(lang: str, category: Optional[str]) -> ReplyKeyboardMarkup:
@@ -90,7 +144,7 @@ async def logging_middleware(request, handler):
         response = await handler(request)
 
         # логгируем
-        supabase.table("http_logs").insert({
+        jane_supabase.table("http_logs").insert({
             "method": method,
             "path": path,
             "status_code": response.status,
@@ -103,7 +157,7 @@ async def logging_middleware(request, handler):
         return response
 
     except Exception as e:
-        supabase.table("http_logs").insert({
+        jane_supabase.table("http_logs").insert({
             "method": request.method,
             "path": request.path,
             "status_code": 500,
@@ -138,7 +192,7 @@ async def start_handler(message: Message):
         category, channel = parse_start_param(args[1])
 
     # Check if user is already registered
-    result = supabase.table("users").select("*").eq("id", user_id).execute()
+    result = jane_supabase.table("users").select("*").eq("id", user_id).execute()
     if not result.data:
         if not category:
             error_text = "❌ Error. Message me: @jp_agency" if lang == "en" else "❌ Ошибка. Напишите мне в личку: @jp_agency"
@@ -146,7 +200,7 @@ async def start_handler(message: Message):
             return
 
         # Register new user
-        supabase.table("users").insert({
+        jane_supabase.table("users").insert({
             "id": user_id,
             "lang": lang,
             "created_at": datetime.utcnow().isoformat(),
@@ -163,7 +217,7 @@ async def start_handler(message: Message):
     await message.answer("💋 Hi!" if lang == "ru" else "💋 Hi!", reply_markup=keyboard)
 
     # --- Получаем тарифы из supabase ---
-    tariffs = supabase.table("tariffs") \
+    tariffs = jane_supabase.table("tariffs") \
         .select("*") \
         .eq("is_active", True) \
         .eq("category", category) \
@@ -189,7 +243,7 @@ async def my_subscription_text_handler(message: Message):
     user_id = message.from_user.id
 
     # Получаем активные подписки (как ты уже делаешь)
-    subs_resp = supabase.table("subscriptions") \
+    subs_resp = jane_supabase.table("subscriptions") \
         .select("tariff_id, ends_at") \
         .eq("user_id", user_id) \
         .eq("status", "active") \
@@ -201,7 +255,7 @@ async def my_subscription_text_handler(message: Message):
 
     msg_lines = []
     for sub in subs_resp.data:
-        tariff_resp = supabase.table("tariffs") \
+        tariff_resp = jane_supabase.table("tariffs") \
             .select("title", "channel_id") \
             .eq("id", sub["tariff_id"]) \
             .single() \
@@ -218,7 +272,7 @@ async def my_subscription_text_handler(message: Message):
 async def plans_text_handler(message: Message):
     user_id = message.from_user.id
 
-    user_resp = supabase.table("users").select("*").eq("id", user_id).single().execute()
+    user_resp = jane_supabase.table("users").select("*").eq("id", user_id).single().execute()
     if not user_resp.data:
         await message.answer("❌ Ошибка. Напишите мне: @jp_agency")
         return
@@ -229,7 +283,7 @@ async def plans_text_handler(message: Message):
     channel = user["channel"]
 
     # Получаем тарифы
-    tariffs = supabase.table("tariffs") \
+    tariffs = jane_supabase.table("tariffs") \
         .select("*") \
         .eq("is_active", True) \
         .eq("category", category) \
@@ -260,7 +314,7 @@ async def plan_detail_handler(callback: CallbackQuery):
     user_id = callback.from_user.id
 
     # Получаем пользователя
-    result = supabase.table("users").select("*").eq("id", user_id).execute()
+    result = jane_supabase.table("users").select("*").eq("id", user_id).execute()
     if not result.data:
         await callback.answer("❌ Error. User not found.")
         return
@@ -268,7 +322,7 @@ async def plan_detail_handler(callback: CallbackQuery):
     lang = user["lang"]
 
     # Получаем тариф
-    tariff_resp = supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
+    tariff_resp = jane_supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
     if not tariff_resp.data:
         await callback.answer("❌ Tariff not found")
         return
@@ -306,11 +360,11 @@ async def card_payment_handler(callback: CallbackQuery):
     tariff_id = callback.data.split("_", 2)[2]
 
     # Получаем пользователя
-    user_resp = supabase.table("users").select("lang").eq("id", user_id).single().execute()
+    user_resp = jane_supabase.table("users").select("lang").eq("id", user_id).single().execute()
     lang = user_resp.data["lang"] if user_resp.data else "en"
 
     # Проверка на активную подписку
-    existing_sub = supabase.table("subscriptions") \
+    existing_sub = jane_supabase.table("subscriptions") \
         .select("*") \
         .eq("user_id", user_id) \
         .eq("tariff_id", tariff_id) \
@@ -324,7 +378,7 @@ async def card_payment_handler(callback: CallbackQuery):
         return
 
     # Получаем тариф
-    tariff_resp = supabase.table("tariffs").select("tribute_link", "title").eq("id", tariff_id).single().execute()
+    tariff_resp = jane_supabase.table("tariffs").select("tribute_link", "title").eq("id", tariff_id).single().execute()
     if not tariff_resp.data:
         await callback.message.answer("❌ Tariff not found")
         await callback.answer()
@@ -353,7 +407,7 @@ async def card_payment_handler(callback: CallbackQuery):
 async def back_to_plan_list(callback: CallbackQuery):
     user_id = callback.from_user.id
 
-    result = supabase.table("users").select("*").eq("id", user_id).execute()
+    result = jane_supabase.table("users").select("*").eq("id", user_id).execute()
     if not result.data:
         await callback.answer("❌ User not found")
         return
@@ -363,7 +417,7 @@ async def back_to_plan_list(callback: CallbackQuery):
     channel = user["channel"]
 
     # Получаем тарифы
-    tariffs = supabase.table("tariffs") \
+    tariffs = jane_supabase.table("tariffs") \
         .select("*") \
         .eq("is_active", True) \
         .eq("category", category) \
@@ -395,7 +449,7 @@ async def crypto_payment_handler(callback: CallbackQuery):
     tariff_id = callback.data.split("_", 2)[2]
 
     # Получаем пользователя
-    user_result = supabase.table("users").select("*").eq("id", user_id).execute()
+    user_result = jane_supabase.table("users").select("*").eq("id", user_id).execute()
     if not user_result.data:
         await callback.answer("❌ User not found")
         return
@@ -404,14 +458,14 @@ async def crypto_payment_handler(callback: CallbackQuery):
     locale = lang
 
     # Получаем тариф
-    tariff_result = supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
+    tariff_result = jane_supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
     if not tariff_result.data:
         await callback.answer("❌ Tariff not found")
         return
     tariff = tariff_result.data
 
 # ⛔️ Проверка на существующую активную подписку
-    existing_sub = supabase.table("subscriptions") \
+    existing_sub = jane_supabase.table("subscriptions") \
         .select("*") \
         .eq("user_id", user_id) \
         .eq("tariff_id", tariff_id) \
@@ -464,7 +518,7 @@ async def crypto_payment_handler(callback: CallbackQuery):
                 return
 
             # Сохраняем в Supabase
-            supabase.table("invoices").insert({
+            jane_supabase.table("invoices").insert({
                 "id": str(uuid4()),
                 "user_id": user_id,
                 "tariff_id": tariff_id,
@@ -490,7 +544,7 @@ async def crypto_payment_handler(callback: CallbackQuery):
 @dp.message()
 async def fallback_handler(message: Message):
     user_id = message.from_user.id
-    result = supabase.table("users").select("*").eq("id", user_id).execute()
+    result = jane_supabase.table("users").select("*").eq("id", user_id).execute()
     if not result.data:
         await message.answer("❌ Ошибка. Напишите мне в личку: @jp_agency")
         return
@@ -508,7 +562,7 @@ async def my_subscription_handler(callback: CallbackQuery):
     user_id = callback.from_user.id
 
     # Получаем все активные подписки пользователя
-    subs_resp = supabase.table("subscriptions") \
+    subs_resp = jane_supabase.table("subscriptions") \
         .select("tariff_id, ends_at") \
         .eq("user_id", user_id) \
         .eq("status", "active") \
@@ -520,7 +574,7 @@ async def my_subscription_handler(callback: CallbackQuery):
 
     msg_lines = []
     for sub in subs_resp.data:
-        tariff_resp = supabase.table("tariffs") \
+        tariff_resp = jane_supabase.table("tariffs") \
             .select("title", "channel_id") \
             .eq("id", sub["tariff_id"]) \
             .single() \
@@ -572,7 +626,7 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot):
         supabase = request.app["supabase"]
         
         # Получаем язык пользователя из базы
-        user_resp = supabase.table("users") \
+        user_resp = jane_supabase.table("users") \
             .select("lang") \
             .eq("id", telegram_user_id) \
             .execute()
@@ -591,7 +645,7 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot):
                 return web.json_response({"ok": False, "error": error_msg}, status=400)
             
             # Находим тариф по subscription_name (соответствует title в таблице тарифов)
-            tariff_resp = supabase.table("tariffs") \
+            tariff_resp = jane_supabase.table("tariffs") \
                 .select("*") \
                 .eq("title", subscription_name) \
                 .limit(1) \
@@ -608,7 +662,7 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot):
             started_at = datetime.now(timezone.utc).isoformat()
             
             # Обновляем или создаем подписку
-            supabase.table("subscriptions").upsert({
+            jane_supabase.table("subscriptions").upsert({
                 "id": subscription_id,
                 "user_id": telegram_user_id,
                 "tariff_id": tariff_id,
@@ -704,7 +758,7 @@ async def crypto_webhook(request: web.Request):
             return web.json_response({"ok": True, "msg": "Ignored non-success status"}, status=200)
 
         # Обновляем invoice
-        update_result = supabase.table("invoices") \
+        update_result = jane_supabase.table("invoices") \
             .update({
                 "status": "paid",
                 "paid_at": datetime.utcnow().isoformat(),
@@ -726,7 +780,7 @@ async def crypto_webhook(request: web.Request):
         tariff_id = invoice["tariff_id"]
 
         # --- Получаем lang пользователя ---
-        user_resp = supabase.table("users").select("lang").eq("id", user_id).single().execute()
+        user_resp = jane_supabase.table("users").select("lang").eq("id", user_id).single().execute()
         lang = user_resp.data["lang"] if user_resp.data else "en"
 
         # --- Отправляем сообщение пользователю ---
@@ -737,7 +791,7 @@ async def crypto_webhook(request: web.Request):
             print(f"❌ Error sending payment success message to user {user_id}: {e}")
 
         # --- Получаем тариф для времени подписки и канала ---
-        tariff_resp = supabase.table("tariffs").select("lifetime", "channel_id", "title").eq("id", tariff_id).single().execute()
+        tariff_resp = jane_supabase.table("tariffs").select("lifetime", "channel_id", "title").eq("id", tariff_id).single().execute()
         if not tariff_resp.data:
             print(f"⚠️ Tariff {tariff_id} not found.")
             return web.json_response({"ok": True})
@@ -751,7 +805,7 @@ async def crypto_webhook(request: web.Request):
 
         # --- Создаем запись подписки ---
         sub_id = str(uuid4())
-        supabase.table("subscriptions").insert({
+        jane_supabase.table("subscriptions").insert({
             "id": sub_id,
             "user_id": user_id,
             "tariff_id": tariff_id,
