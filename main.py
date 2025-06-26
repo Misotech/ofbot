@@ -204,38 +204,35 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str], chan
     @dp.message(F.text.in_(["My subscription", "Моя подписка"]))
     async def my_subscription_text_handler(message: Message):
         user_id = message.from_user.id
-
+    
         user_resp = supabase.table("users").select("lang").eq("id", user_id).single().execute()
         if not user_resp.data:
             await message.answer("❌ Ошибка. Напишите мне: @jp_agency")
             return
-
+    
         lang = user_resp.data["lang"]
-
+    
+        # Запрашиваем подписки с JOIN на tariffs для фильтрации по category и channel
         subs_resp = supabase.table("subscriptions") \
-            .select("tariff_id, ends_at") \
-            .eq("user_id", user_id) \
-            .eq("bot_id", bot_id) \
-            .eq("status", "active") \
+            .select("subscriptions.tariff_id, subscriptions.ends_at, tariffs.title, tariffs.channel_id") \
+            .eq("subscriptions.user_id", user_id) \
+            .eq("subscriptions.status", "active") \
+            .eq("tariffs.category", category) \
+            .eq("tariffs.channel_name", channel) \
+            .join("tariffs", "subscriptions.tariff_id = tariffs.id") \
             .execute()
-
+    
         if not subs_resp.data:
             await message.answer("У вас нет активных подписок" if lang == "ru" else "You have no active subscriptions")
             return
-
+    
         msg_lines = []
         for sub in subs_resp.data:
-            tariff_resp = supabase.table("tariffs") \
-                .select("title, channel_id") \
-                .eq("id", sub["tariff_id"]) \
-                .single() \
-                .execute()
-            if tariff_resp.data:
-                title = tariff_resp.data["title"]
-                channel_id = tariff_resp.data.get("channel_id", "N/A")
-                ends_at = sub["ends_at"]
-                msg_lines.append(f"📦 <b>{title}</b>\n🗓 Ends at: {ends_at}\n🔗 Channel: {channel_id}")
-
+            title = sub["title"]
+            channel_id = sub.get("channel_id", "N/A")
+            ends_at = sub["ends_at"]
+            msg_lines.append(f"📦 <b>{escape(title)}</b>\n🗓 Ends at: {ends_at}\n🔗 Channel: {channel_id}")
+    
         await message.answer("\n\n".join(msg_lines), parse_mode="HTML")
 
     @dp.message(F.text.in_(["📋 Тарифы", "📋 Plans"]))
@@ -491,40 +488,38 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str], chan
 
         await message.answer("🚧 В разработке." if lang == "ru" else "🚧 Under development.", reply_markup=keyboard)
 
+    
+
     @dp.callback_query(F.data == "my_subscription")
     async def my_subscription_handler(callback: CallbackQuery):
         user_id = callback.from_user.id
-
+    
         user_resp = supabase.table("users").select("lang").eq("id", user_id).execute()
         if not user_resp.data:
             await callback.answer("❌ Error. User not found.")
             return
         lang = user_resp.data[0]["lang"]
-
+    
         subs_resp = supabase.table("subscriptions") \
-            .select("tariff_id, ends_at") \
-            .eq("user_id", user_id) \
-            .eq("bot_id", bot_id) \
-            .eq("status", "active") \
+            .select("subscriptions.tariff_id, subscriptions.ends_at, tariffs.title, tariffs.channel_id") \
+            .eq("subscriptions.user_id", user_id) \
+            .eq("subscriptions.status", "active") \
+            .eq("tariffs.category", category) \
+            .eq("tariffs.channel_name", channel) \
+            .join("tariffs", "subscriptions.tariff_id = tariffs.id") \
             .execute()
-
+    
         if not subs_resp.data or len(subs_resp.data) == 0:
             await callback.answer("У вас нет активных подписок" if lang == "ru" else "You have no active subscriptions", show_alert=True)
             return
-
+    
         msg_lines = []
         for sub in subs_resp.data:
-            tariff_resp = supabase.table("tariffs") \
-                .select("title, channel_id") \
-                .eq("id", sub["tariff_id"]) \
-                .single() \
-                .execute()
-            if tariff_resp.data:
-                title = tariff_resp.data["title"]
-                channel_id = tariff_resp.data.get("channel_id", "N/A")
-                ends_at = sub["ends_at"]
-                msg_lines.append(f"📦 <b>{escape(title)}</b>\n🗓 Ends at: {ends_at}\n🔗 Channel: {channel_id}")
-
+            title = sub["title"]
+            channel_id = sub.get("channel_id", "N/A")
+            ends_at = sub["ends_at"]
+            msg_lines.append(f"📦 <b>{escape(title)}</b>\n🗓 Ends at: {ends_at}\n🔗 Channel: {channel_id}")
+    
         text = "\n\n".join(msg_lines)
         await callback.message.answer(text, parse_mode="HTML")
         await callback.answer()
