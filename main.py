@@ -752,10 +752,11 @@ async def crypto_webhook(request: web.Request):
 # --- WEBHOOK SETUP ---
 async def on_startup(app: web.Application):
     for bot_id, bot in bots.items():
-        webhook_path = f"/webhook/{bot_id}"
+        webhook_path = f"/webhook/{bot.token}"  # Изменено на /webhook/{bot_token}
         webhook_url = f"{WEBHOOK_URL}{webhook_path}"
+        print(f"Registering webhook for bot_id: {bot_id}, path: {webhook_path}")
         try:
-            await bot.set_webhook(webhook_url)
+            await bot.set_webhook(webhook_url, drop_pending_updates=True)
             print(f"Webhook set for bot {bot_id}: {webhook_url}")
             SimpleRequestHandler(dispatcher=dispatchers[bot_id], bot=bot).register(app, path=webhook_path)
         except Exception as e:
