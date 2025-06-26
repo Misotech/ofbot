@@ -32,10 +32,10 @@ dispatchers = {}  # Хранит экземпляры Dispatcher
 def load_bot_tokens():
     """
     Загружает токены ботов из Supabase или переменных окружения.
-    Возвращает список словарей: [{"id": str, "token": str, "category": str}, ...]
+    Возвращает список словарей: [{"id": str, "token": str, "category": str, "channel": str}, ...]
     """
     try:
-        response = supabase.table("bots").select("id, token, category").eq("is_active", True).execute()
+        response = supabase.table("bots").select("id, token, category, channel").eq("is_active", True).execute()
         if response.data:
             return response.data
     except Exception as e:
@@ -43,8 +43,15 @@ def load_bot_tokens():
 
     tokens_str = os.getenv("BOT_TOKENS")
     if tokens_str:
-        return [{"id": f"bot_{i}", "token": token, "category": None} for i, token in enumerate(tokens_str.split(","))]
-    return [{"id": "default", "token": os.getenv("BOT_TOKEN"), "category": None}]
+        tokens = []
+        for i, token_data in enumerate(tokens_str.split(",")):
+            parts = token_data.split(":")
+            token = parts[0]
+            category = parts[1] if len(parts) > 1 else None
+            channel = parts[2] if len(parts) > 2 else None
+            tokens.append({"id": f"bot_{i}", "token": token, "category": category, "channel": channel})
+        return tokens
+    return [{"id": "default", "token": os.getenv("BOT_TOKEN"), "category": None, "channel": None}]
 
 # --- INIT BOTS ---
 def init_bots():
@@ -54,6 +61,7 @@ def init_bots():
         bot_id = config["id"]
         token = config["token"]
         category = config.get("category")
+        channel = config.get("channel")
         
         bot = Bot(token=token, parse_mode=ParseMode.HTML)
         dp = Dispatcher(storage=MemoryStorage())
@@ -61,7 +69,7 @@ def init_bots():
         bots[bot_id] = bot
         dispatchers[bot_id] = dp
         
-        register_handlers(dp, bot_id, category)
+        register_handlers(dp, bot_id, category, channel)
         print(f"Bot {bot_id} initialized with token: {token[:10]}...")
 
 # --- MENU ---
@@ -136,7 +144,7 @@ def detect_source(path: str, user_agent: str) -> str:
     return "unknown"
 
 # --- REGISTER HANDLERS ---
-def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
+def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str], channel: Optional[str]):
     """Регистрирует обработчики для конкретного бота."""
     
     @dp.message(F.text.startswith("/start"))
@@ -144,13 +152,18 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
         user_id = message.from_user.id
         lang = message.from_user.language_code or "en"
 
+        # Используем category и channel из конфигурации бота
+        effective_category = category
+        effective_channel = channel
+
+        # Проверяем параметры старта
         args = message.text.split(" ")
-        start_category, channel = None, None
         if len(args) > 1:
-            start_category, channel = parse_start_param(args[1])
+            start_category, start_channel = parse_start_param(args[1])
+            effective_category = start_category or effective_category
+            effective_channel = start_channel or effective_channel
 
-        effective_category = start_category or category
-
+        # Проверяем пользователя
         result = supabase.table("users").select("*").eq("id", user_id).execute()
         if not result.data:
             if not effective_category:
@@ -161,15 +174,10 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
             supabase.table("users").insert({
                 "id": user_id,
                 "lang": lang,
-                "created_at": datetime.utcnow().isoformat(),
-                "category": effective_category,
-                "channel": channel,
-                "bot_id": bot_id
+                "created_at": datetime.utcnow().isoformat()
             }).execute()
         else:
             lang = result.data[0]["lang"]
-            effective_category = result.data[0]["category"]
-            channel = result.data[0]["channel"]
 
         keyboard = get_main_keyboard(lang, effective_category)
         await message.answer("💋 Hi!" if lang == "ru" else "💋 Hi!", reply_markup=keyboard)
@@ -178,7 +186,7 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
             .select("*") \
             .eq("is_active", True) \
             .eq("category", effective_category) \
-            .eq("channel_name", channel) \
+            .eq("channel_name", effective_channel) \
             .execute().data
 
         if tariffs:
@@ -197,14 +205,22 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
     async def my_subscription_text_handler(message: Message):
         user_id = message.from_user.id
 
+        user_resp = supabase.table("users").select("lang").eq("id", user_id).single().execute()
+        if not user_resp.data:
+            await message.answer("❌ Ошибка. Напишите мне: @jp_agency")
+            return
+
+        lang = user_resp.data["lang"]
+
         subs_resp = supabase.table("subscriptions") \
             .select("tariff_id, ends_at") \
             .eq("user_id", user_id) \
+            .eq("bot_id", bot_id) \
             .eq("status", "active") \
             .execute()
 
         if not subs_resp.data:
-            await message.answer("У вас нет активных подписок" if message.from_user.language_code == "ru" else "You have no active subscriptions")
+            await message.answer("У вас нет активных подписок" if lang == "ru" else "You have no active subscriptions")
             return
 
         msg_lines = []
@@ -226,21 +242,20 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
     async def plans_text_handler(message: Message):
         user_id = message.from_user.id
 
-        user_resp = supabase.table("users").select("*").eq("id", user_id).single().execute()
+        user_resp = supabase.table("users").select("lang").eq("id", user_id).single().execute()
         if not user_resp.data:
             await message.answer("❌ Ошибка. Напишите мне: @jp_agency")
             return
 
-        user = user_resp.data
-        lang = user["lang"]
-        effective_category = user["category"]
-        channel = user["channel"]
+        lang = user_resp.data["lang"]
+        effective_category = category
+        effective_channel = channel
 
         tariffs = supabase.table("tariffs") \
             .select("*") \
             .eq("is_active", True) \
             .eq("category", effective_category) \
-            .eq("channel_name", channel) \
+            .eq("channel_name", effective_channel) \
             .execute().data
 
         if not tariffs:
@@ -263,14 +278,13 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
         tariff_id = callback.data.split("_", 1)[1]
         user_id = callback.from_user.id
 
-        result = supabase.table("users").select("*").eq("id", user_id).execute()
-        if not result.data:
+        user_resp = supabase.table("users").select("lang").eq("id", user_id).execute()
+        if not user_resp.data:
             await callback.answer("❌ Error. User not found.")
             return
-        user = result.data[0]
-        lang = user["lang"]
+        lang = user_resp.data[0]["lang"]
 
-        tariff_resp = supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
+        tariff_resp = supabase.table("tariffs").select("*").eq("id", tariff_id).eq("category", category).eq("channel_name", channel).single().execute()
         if not tariff_resp.data:
             await callback.answer("❌ Tariff not found")
             return
@@ -310,6 +324,7 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
             .select("*") \
             .eq("user_id", user_id) \
             .eq("tariff_id", tariff_id) \
+            .eq("bot_id", bot_id) \
             .eq("status", "active") \
             .execute()
 
@@ -344,20 +359,19 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
     async def back_to_plan_list(callback: CallbackQuery):
         user_id = callback.from_user.id
 
-        result = supabase.table("users").select("*").eq("id", user_id).execute()
-        if not result.data:
+        user_resp = supabase.table("users").select("lang").eq("id", user_id).execute()
+        if not user_resp.data:
             await callback.answer("❌ User not found")
             return
-        user = result.data[0]
-        lang = user["lang"]
-        effective_category = user["category"]
-        channel = user["channel"]
+        lang = user_resp.data[0]["lang"]
+        effective_category = category
+        effective_channel = channel
 
         tariffs = supabase.table("tariffs") \
             .select("*") \
             .eq("is_active", True) \
             .eq("category", effective_category) \
-            .eq("channel_name", channel) \
+            .eq("channel_name", effective_channel) \
             .execute().data
 
         if not tariffs:
@@ -381,15 +395,14 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
         user_id = callback.from_user.id
         tariff_id = callback.data.split("_", 2)[2]
 
-        user_result = supabase.table("users").select("*").eq("id", user_id).execute()
+        user_result = supabase.table("users").select("lang").eq("id", user_id).execute()
         if not user_result.data:
             await callback.answer("❌ User not found")
             return
-        user = user_result.data[0]
-        lang = user["lang"]
+        lang = user_result.data[0]["lang"]
         locale = lang
 
-        tariff_result = supabase.table("tariffs").select("*").eq("id", tariff_id).single().execute()
+        tariff_result = supabase.table("tariffs").select("*").eq("id", tariff_id).eq("category", category).eq("channel_name", channel).single().execute()
         if not tariff_result.data:
             await callback.answer("❌ Tariff not found")
             return
@@ -399,6 +412,7 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
             .select("*") \
             .eq("user_id", user_id) \
             .eq("tariff_id", tariff_id) \
+            .eq("bot_id", bot_id) \
             .eq("status", "active") \
             .execute()
 
@@ -423,7 +437,8 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
             "locale": locale,
             "add_fields": {
                 "user_id": str(user_id),
-                "tariff_id": tariff_id
+                "tariff_id": tariff_id,
+                "bot_id": bot_id
             },
             "order_id": order_id
         }
@@ -466,15 +481,13 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
     @dp.message()
     async def fallback_handler(message: Message):
         user_id = message.from_user.id
-        result = supabase.table("users").select("*").eq("id", user_id).execute()
+        result = supabase.table("users").select("lang").eq("id", user_id).execute()
         if not result.data:
             await message.answer("❌ Ошибка. Напишите мне в личку: @jp_agency")
             return
 
-        user = result.data[0]
-        lang = user["lang"]
-        effective_category = user["category"]
-        keyboard = get_main_keyboard(lang, effective_category)
+        lang = result.data[0]["lang"]
+        keyboard = get_main_keyboard(lang, category)
 
         await message.answer("🚧 В разработке." if lang == "ru" else "🚧 Under development.", reply_markup=keyboard)
 
@@ -482,14 +495,21 @@ def register_handlers(dp: Dispatcher, bot_id: str, category: Optional[str]):
     async def my_subscription_handler(callback: CallbackQuery):
         user_id = callback.from_user.id
 
+        user_resp = supabase.table("users").select("lang").eq("id", user_id).execute()
+        if not user_resp.data:
+            await callback.answer("❌ Error. User not found.")
+            return
+        lang = user_resp.data[0]["lang"]
+
         subs_resp = supabase.table("subscriptions") \
             .select("tariff_id, ends_at") \
             .eq("user_id", user_id) \
+            .eq("bot_id", bot_id) \
             .eq("status", "active") \
             .execute()
 
         if not subs_resp.data or len(subs_resp.data) == 0:
-            await callback.answer("У вас нет активных подписок" if callback.from_user.language_code == "ru" else "You have no active subscriptions", show_alert=True)
+            await callback.answer("У вас нет активных подписок" if lang == "ru" else "You have no active subscriptions", show_alert=True)
             return
 
         msg_lines = []
@@ -534,12 +554,12 @@ async def tribute_webhook_handler(request: web.Request, bots: dict):
         if not telegram_user_id:
             return web.json_response({"ok": False, "error": "Missing telegram_user_id"}, status=400)
 
-        user_resp = supabase.table("users").select("lang, bot_id").eq("id", telegram_user_id).execute()
+        user_resp = supabase.table("users").select("lang").eq("id", telegram_user_id).execute()
         if not user_resp.data:
             return web.json_response({"ok": False, "error": "User not found"}, status=404)
 
         lang = user_resp.data[0]["lang"]
-        bot_id = user_resp.data[0]["bot_id"]
+        bot_id = payload.get("bot_id", "default")  # Предполагаем, что bot_id передается в payload
         bot = bots.get(bot_id)
         if not bot:
             return web.json_response({"ok": False, "error": "Bot not found"}, status=404)
@@ -578,7 +598,8 @@ async def tribute_webhook_handler(request: web.Request, bots: dict):
                 "status": "active",
                 "price": payload.get("price"),
                 "currency": payload.get("currency"),
-                "updated_at": started_at
+                "updated_at": started_at,
+                "bot_id": bot_id
             }).execute()
 
             if lang == "ru":
@@ -708,7 +729,8 @@ async def crypto_webhook(request: web.Request):
             "started_at": started_at.isoformat(),
             "ends_at": ends_at.isoformat(),
             "status": "active",
-            "created_at": started_at.isoformat()
+            "created_at": started_at.isoformat(),
+            "bot_id": bot_id
         }).execute()
 
         if channel_id:
