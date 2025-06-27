@@ -2,6 +2,7 @@ import os
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 from uuid import uuid4
+import asyncio
 
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
@@ -42,6 +43,41 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
 dp = Dispatcher(storage=MemoryStorage())
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+# --- NOTIFICATION BOT ---
+NOTIFICATION_BOT_TOKEN = "474032968:AAEACo_X1sZvjcDtcDmxs2DqbZ7qjhum2fk"
+NOTIFICATION_CHAT_ID = "-4950094176"
+
+
+async def send_notification(message: str, try_count: int = 3):
+    url = f"https://api.telegram.org/bot{NOTIFICATION_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": NOTIFICATION_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    
+    async with aiohttp.ClientSession() as session:
+        for attempt in range(try_count):
+            try:
+                async with session.post(url, json=payload, timeout=5) as resp:
+                    if resp.status == 200:
+                        return True
+                    elif attempt == try_count - 1:  # Последняя попытка
+                        error_text = await resp.text()
+                        print(f"❌ Final notification send failed: {error_text}")
+                        return False
+                    await asyncio.sleep(1)  # Пауза перед повторной попыткой
+            except Exception as e:
+                if attempt == try_count - 1:  # Последняя попытка
+                    print(f"❌ Final notification error: {e}")
+                    return False
+                await asyncio.sleep(1)
+    return False
+
+
 
 # --- MENU ---
 def get_main_keyboard(lang: str, category: Optional[str]) -> ReplyKeyboardMarkup:
@@ -654,8 +690,25 @@ async def tribute_webhook_handler(request: web.Request, bot: Bot):
                     )
             except Exception as e:
                 print(f"❌ Error sending message: {e}")
+
+
+                    # Отправляем уведомление
+            now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+            notification_msg = (
+                "🆕 <b>New Tribute subscription</b>\n"
+                f"📅 <b>Date:</b> {now}\n"
+                f"👤 <b>User ID:</b> {telegram_user_id}\n"
+                f"📝 <b>Plan:</b> {subscription_name}\n"
+                f"💰 <b>Amount:</b> {payload.get('amount')} {payload.get('currency')}\n"
+                f"⏳ <b>Valid until:</b> {expires_at}"
+            )
+            await send_notification(notification_msg)
+
+            
             
             return web.json_response({"ok": True})
+
+
         
         elif event_name == "cancelled_subscription":
             # Обработка отмены подписки с учетом языка
@@ -777,8 +830,22 @@ async def crypto_webhook(request: web.Request):
                     f"Invite link: {invite_link}"
                 )
                 await bot.send_message(chat_id=user_id, text=invite_msg)
+               
             except Exception as e:
                 print(f"❌ Error creating or sending invite link for user {user_id}: {e}")
+
+
+        # Отправляем уведомление (ПРАВИЛЬНОЕ РАСПОЛОЖЕНИЕ)
+        now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        notification_msg = (
+            "🆕 <b>New Crypto subscription</b>\n"
+            f"📅 <b>Date:</b> {now}\n"
+            f"👤 <b>User ID:</b> {user_id}\n"
+            f"📝 <b>Plan:</b> {tariff['title']}\n"
+            f"💰 <b>Amount:</b> {invoice['amount']} {invoice['currency']}\n"
+            f"⏳ <b>Valid until:</b> {ends_at.isoformat()}"
+        )
+        await send_notification(notification_msg)
 
         return web.json_response({"ok": True})
 
