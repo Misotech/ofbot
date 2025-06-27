@@ -754,13 +754,28 @@ async def crypto_webhook(request: web.Request):
         # Проверяем, что order_id принадлежит текущей реплике
         bot_token_hash = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:8]
         if not order_id.endswith(f"-{bot_token_hash}"):
-            print(f"⚠️ Ignoring webhook for order_id {order_id} (not for this replica)")
-            return web.json_response({"ok": True, "msg": "Ignored: not for this replica"}, status=200)
-
-        print("📥 CryptoCloud webhook received:", dict(data))
-
+            print(f"⚠️ Order {order_id} not for this replica. Redirecting to WEBHOOK_URL2...")
+            
+            if not WEBHOOK_URL2:
+                return web.json_response({"ok": False, "error": "WEBHOOK_URL2 not configured"}, status=500)
+            
+            try:
+                async with aiohttp.ClientSession() as session:
+                    # Пересылаем вебхук на вторую реплику
+                    resp = await session.post(
+                        f"{WEBHOOK_URL2}/webhook/cryptocloud",
+                        data=data,
+                        timeout=5
+                    )
+                    return web.json_response(await resp.json())
+            except Exception as e:
+                print(f"❌ Error redirecting to WEBHOOK_URL2: {e}")
+                return web.json_response({"ok": False, "error": str(e)}, status=500)
+        
+        # Остальная логика обработки для текущей реплики
         if status != "success" or not order_id:
             return web.json_response({"ok": True, "msg": "Ignored non-success status"}, status=200)
+
 
         # Обновляем invoice
         update_result = supabase.table("invoices") \
