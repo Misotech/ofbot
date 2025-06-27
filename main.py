@@ -463,8 +463,9 @@ async def crypto_payment_handler(callback: CallbackQuery):
 
     amount = float(tariff["price"])
 
-    # Создаём order_id отдельно
-    order_id = f"{user_id}-{tariff_id}-{int(datetime.utcnow().timestamp())}"
+    # В crypto_payment_handler
+    bot_token_hash = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:8]  # Первые 8 символов хэша токена
+    order_id = f"{user_id}-{tariff_id}-{int(datetime.utcnow().timestamp())}-{bot_token_hash}"
 
     # --- Запрос в CryptoCloud ---
     url = "https://api.cryptocloud.plus/v2/invoice/create"
@@ -750,6 +751,11 @@ async def crypto_webhook(request: web.Request):
         order_id = data.get("order_id")
         # invoice_id = data.get("invoice_id")
         # token = data.get("token")
+        # Проверяем, что order_id принадлежит текущей реплике
+        bot_token_hash = hashlib.sha256(BOT_TOKEN.encode()).hexdigest()[:8]
+        if not order_id.endswith(f"-{bot_token_hash}"):
+            print(f"⚠️ Ignoring webhook for order_id {order_id} (not for this replica)")
+            return web.json_response({"ok": True, "msg": "Ignored: not for this replica"}, status=200)
 
         print("📥 CryptoCloud webhook received:", dict(data))
 
